@@ -1,0 +1,25 @@
+version: '3.1'
+services:
+  elastic:
+    image: elasticsearch:8.8.0
+    container_name: elastic
+    environment:
+      - discovery.type=single-node
+      - bootstrap.memory_lock=true
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+      - "xpack.security.enabled=false"
+      - ELASTIC_PASSWORD=changeme
+      - ELASTIC_USERNAME=elastic
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    ports:
+      - 9200:9200
+    volumes:
+      - elastic:/usr/share/elasticsearch/data
+
+
+volumes:
+  elastic:
+    driver: local
