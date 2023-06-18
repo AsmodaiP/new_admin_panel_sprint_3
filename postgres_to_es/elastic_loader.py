@@ -1,4 +1,5 @@
 """Module providing class for working with elastic.""" ""
+import time
 from typing import NamedTuple
 
 from backoff import backoff
@@ -20,6 +21,7 @@ class ElasticLoader:
 
     def __init__(self, hosts: list[str], basic_auth: ElasticBasicAuthCredentials, index_name: str):
         self.index_name = index_name
+        self.hosts = hosts
         self.es = Elasticsearch(**{'hosts': hosts, 'basic_auth': basic_auth, 'verify_certs': False})
 
     def _generate_actions(self, movies: list[MovieSchema]):
@@ -29,6 +31,8 @@ class ElasticLoader:
 
     def create_index_if_not_exists(self):
         """Create index if not exists."""
+        while not self.es.ping():
+            time.sleep(1)
         if not self.es.indices.exists(index=self.index_name):
             self.es.indices.create(index=self.index_name, body=ELASTIC_SCHEMA)
 

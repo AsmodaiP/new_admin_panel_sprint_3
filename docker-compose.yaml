@@ -8,8 +8,10 @@ services:
       - bootstrap.memory_lock=true
       - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
       - "xpack.security.enabled=false"
-      - ELASTIC_PASSWORD=changeme
-      - ELASTIC_USERNAME=elastic
+    env_file:
+      - .env
+    expose:
+      -  9200
     ulimits:
       memlock:
         soft: -1
@@ -18,6 +20,20 @@ services:
       - 9200:9200
     volumes:
       - elastic:/usr/share/elasticsearch/data
+
+  redis:
+    image: redis
+    ports:
+      - "6379:6379"
+
+  etl:
+    build: postgres_to_es/
+    container_name: etl
+    depends_on:
+      - elastic
+      - redis
+    env_file:
+      - .env
 
 
 volumes:

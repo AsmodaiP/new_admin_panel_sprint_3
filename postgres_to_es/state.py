@@ -3,6 +3,7 @@ import abc
 import datetime
 import json
 from enum import Enum
+from os import getenv
 from typing import Any
 
 import redis
@@ -24,7 +25,8 @@ class StorageFactory:
         if storage_type == StorageType.JSON.value:
             return JsonFileStorage('state.json')
         elif storage_type == StorageType.REDIS.value:
-            return RedisStorage(redis.Redis())
+            return RedisStorage(redis.Redis(host=getenv('REDIS_HOST', 'localhost'),
+                                            port=getenv('REDIS_PORT', 6379)))
         else:
             storage_types = ', '.join([storage_type.value for storage_type in StorageType])
             raise ValueError(
@@ -77,7 +79,10 @@ class RedisStorage(BaseStorage):
 
     def retrieve_state(self) -> dict[str, Any]:
         """Get state from redis."""
-        return json.loads(self.redis_client.get('state', {}))
+        redis_state = self.redis_client.get('state')
+        if not redis_state:
+            return {}
+        return json.loads(redis_state) or {}
 
 
 class State:
