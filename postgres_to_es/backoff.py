@@ -20,4 +20,5 @@ def backoff(func):
                 logger.exception('Failed to execute func with backoff;', e, exc_info=True)
                 time.sleep(sleep_time)
                 sleep_time *= 2 ** factor
+
     return inner

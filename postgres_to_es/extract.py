@@ -6,6 +6,7 @@ from typing import NamedTuple
 
 import psycopg2.extensions
 from backoff import backoff
+from constants import JUNCTION_TABLES, MOVIE_TABLE_NAME
 from models import MovieSchema, PersonSchema
 from state import State
 
@@ -19,15 +20,15 @@ class ModifiedDatetimes:
 
     person: datetime
     genre: datetime
-    movie: datetime
+    film_work: datetime
 
 
 class PersonFromDb(NamedTuple):
     """Person from db."""
 
     id: str
-    name: str
-    modified: datetime
+    role: str
+    name: datetime
 
 
 class GenreFromDb(NamedTuple):
@@ -55,9 +56,7 @@ class MoviesWithFull(NamedTuple):
     type: str
     created: datetime
     modified: datetime
-    role: str
-    p_id: str
-    full_name: str
+    persons: list[PersonFromDb]
     genre: str
 
 
@@ -72,190 +71,134 @@ class Extractor:
         self, modified_dates: ModifiedDatetimes, max_extract_row_by_query: int = 1000
     ) -> tuple[list[MovieSchema], ModifiedDatetimes]:
         """Get data from database and transform it to schema for elastic."""
-        persons = self.extract_persons(modified_dates.person, max_extract_row_by_query)
-        movies_by_persons = self.extract_movies_by_person_ids([person.id for person in persons])
-        modified_dates.person = max([person.modified for person in persons] or [modified_dates.person])
+        movies_to_update = []
+        for table_name, junction_table in JUNCTION_TABLES.items():
 
-        genres = self.extract_genres(modified_dates.genre, max_extract_row_by_query)
-        movies_by_genres = self.extract_movies_by_genre_ids([genre.id for genre in genres])
-        modified_dates.genre = max([genre.modified for genre in genres] or [modified_dates.genre])
+            movies, max_modified_junction = self.extract_modified(
+                table_name, junction_table, getattr(modified_dates, table_name), max_extract_row_by_query
+            )
+            if max_modified_junction is not None:
+                modified_dates.__setattr__(table_name, max_modified_junction)
+            movies_to_update += movies
+        movies_with_full_info = self.get_full_info([movie.id for movie in movies_to_update])
+        return movies_with_full_info, modified_dates
 
-        movies = self.extract_modified_movies(modified_dates.movie, max_extract_row_by_query)
-        modified_dates.movie = max([movie.modified for movie in movies] or [modified_dates.movie])
-
-        movies_with_full = self.get_full_info([movie.id for movie in movies_by_persons + movies_by_genres])
-        movies = movies + movies_with_full
-
-        return self._transform_movies_info_to_schema(movies), modified_dates
-
-    def extract_genres(self, from_modified_date: datetime, max_records: int) -> list[GenreFromDb]:
-        """Get genres which modified after from_modified_date."""
-        with self.pg_client.cursor() as cursor:
-            cursor.execute(
-                """
-                SELECT id, name, modified
-                FROM content.genre
-                WHERE modified > %s
-                ORDER BY modified
+    @backoff
+    def extract_modified(
+        self, table_name: str, junction_table: str, from_modified_date: datetime, max_records: int
+    ) -> tuple[MoviesFromDb, datetime]:
+        """Get records which modified after from_modified_date and their movies."""
+        if junction_table is None and table_name == MOVIE_TABLE_NAME:
+            query = f"""
+                SELECT t.id as movie_id, t.modified as movie_modified, t.modified as table_modified
+                FROM content.{table_name} t
+                WHERE t.modified > %s
+                ORDER BY t.modified
                 LIMIT %s
-                """,
-                (from_modified_date, max_records),
-            )
-            return [GenreFromDb(*row) for row in cursor.fetchall()]
-
-    def extract_movies_by_genre_ids(self, genre_ids: list[str]) -> list[MoviesFromDb]:
-        """Get movies by genre ids."""
-        if not genre_ids:
-            return []
-        with self.pg_client.cursor() as cursor:
-            cursor.execute(
                 """
-                SELECT fw.id, fw.modified
-                FROM content.film_work fw
-                LEFT JOIN content.genre_film_work gfw ON gfw.film_work_id = fw.id
-                WHERE gfw.genre_id IN %s
-                ORDER BY fw.modified
-                LIMIT 100;
-                """,
-                (tuple(genre_ids),),
-            )
-            return [MoviesFromDb(*row) for row in cursor.fetchall()]
-
-    def extract_modified_movies(self, from_modified_date: datetime, max_records: int) -> list[MoviesWithFull]:
-        """Get modified movies."""
-        with self.pg_client.cursor() as cursor:
-            cursor.execute(
-                """
-                SELECT
-                    fw.id as fw_id,
-                    fw.title,
-                    fw.description,
-                    fw.rating,
-                    fw.type,
-                    fw.created,
-                    fw.modified,
-                    pfw.role,
-                    p.id,
-                    p.full_name,
-                    g.name
-                FROM content.film_work fw
-                LEFT JOIN content.person_film_work pfw ON pfw.film_work_id = fw.id
-                LEFT JOIN content.person p ON p.id = pfw.person_id
-                LEFT JOIN content.genre_film_work gfw ON gfw.film_work_id = fw.id
-                LEFT JOIN content.genre g ON g.id = gfw.genre_id
-                WHERE fw.modified > %s
-                ORDER BY fw.modified
-                LIMIT %s;
-                """,
-                (from_modified_date, max_records),
-            )
-            return [MoviesWithFull(*row) for row in cursor.fetchall()]
-
-    @backoff
-    def extract_persons(self, from_modified_date: datetime, max_records: int) -> list[PersonFromDb]:
-        """Get persons which modified after from_modified_date."""
-        with self.pg_client.cursor() as cursor:
-            cursor.execute(
-                """
-                SELECT id, full_name, modified
-                FROM content.person
-                WHERE modified > %s
-                ORDER BY modified
+        else:
+            query = f"""
+                SELECT fw.id as movie_id, fw.modified as movie_modified, t.modified as table_modified
+                FROM content.{table_name} t
+                JOIN content.{junction_table} jt ON jt.{table_name}_id = t.id
+                JOIN content.film_work fw ON jt.film_work_id = fw.id
+                WHERE t.modified > %s
+                ORDER BY fw.modified, t.modified
                 LIMIT %s
-                """,
-                (from_modified_date, max_records),
-            )
-
-            return [PersonFromDb(*row) for row in cursor.fetchall()]
-
-    @backoff
-    def extract_movies_by_person_ids(self, person_ids: list[str]) -> list[MoviesFromDb]:
-        """Get movies by person ids."""
-        if not person_ids:
-            return []
+                """
         with self.pg_client.cursor() as cursor:
             cursor.execute(
-                """
-                SELECT fw.id, fw.modified
-                FROM content.film_work fw
-                LEFT JOIN content.person_film_work pfw ON pfw.film_work_id = fw.id
-                WHERE pfw.person_id IN %s
-                ORDER BY fw.modified
-                LIMIT 100;
-                """,
-                (tuple(person_ids),),
+                query, (from_modified_date, max_records),
             )
-
-            return [MoviesFromDb(*row) for row in cursor.fetchall()]
+            max_modified_junction = None
+            movies = []
+            for row in cursor.fetchall():
+                movies.append(MoviesFromDb(*row[:2]))
+                max_modified_junction = max(row[2], max_modified_junction or row[2])
+        return movies, max_modified_junction
 
     @backoff
-    def get_full_info(self, movies_id: list[str]) -> list[MoviesWithFull]:
+    def get_full_info(self, movies_id: list[str]) -> list[MovieSchema]:
         """Get full info about movies by id."""
         if not movies_id:
             return []
         with self.pg_client.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT
-                    fw.id as fw_id,
-                    fw.title,
-                    fw.description,
-                    fw.rating,
-                    fw.type,
-                    fw.created,
-                    fw.modified,
-                    pfw.role,
-                    p.id,
-                    p.full_name,
-                    g.name
-                FROM content.film_work fw
-                LEFT JOIN content.person_film_work pfw ON pfw.film_work_id = fw.id
-                LEFT JOIN content.person p ON p.id = pfw.person_id
-                LEFT JOIN content.genre_film_work gfw ON gfw.film_work_id = fw.id
-                LEFT JOIN content.genre g ON g.id = gfw.genre_id
-                WHERE fw.id IN %s;
-                """,
+            SELECT
+                fw.id,
+                fw.title,
+                fw.description,
+                fw.rating as imdb_rating,
+                fw.type,
+                fw.created,
+                fw.modified,
+                COALESCE (
+                    json_agg(
+                        DISTINCT jsonb_build_object(
+                            'id', p.id,
+                            'name', p.full_name
+                        )
+                    ) FILTER (WHERE p.id is not null AND pfw.role='a'),
+                    '[]'
+                ) as actors,
+                COALESCE (
+                    json_agg(
+                        DISTINCT jsonb_build_object(
+                            'id', p.id,
+                            'name', p.full_name
+                        )
+                    ) FILTER (WHERE p.id is not null AND pfw.role='w'),
+                    '[]'
+                ) as writers,
+                COALESCE (
+                    jsonb_agg(
+                        DISTINCT jsonb_build_object(
+                            'id', p.id,
+                            'name', p.full_name
+                        )
+                    ) FILTER (WHERE p.id is not null AND pfw.role='d'),
+                    '[]'
+                ) as directors,
+                array_agg(DISTINCT g.name) as genres
+            FROM content.film_work fw
+            LEFT JOIN content.person_film_work pfw ON pfw.film_work_id = fw.id
+            LEFT JOIN content.person p ON p.id = pfw.person_id
+            LEFT JOIN content.genre_film_work gfw ON gfw.film_work_id = fw.id
+            LEFT JOIN content.genre g ON g.id = gfw.genre_id
+            WHERE fw.id IN %s
+            GROUP BY fw.id, fw.title, fw.description, fw.rating, fw.type, fw.created, fw.modified;
+            """,
                 (tuple(movies_id),),
             )
-            return [MoviesWithFull(*row) for row in cursor.fetchall()]
+            columns = [desc[0] for desc in cursor.description]
+            movies: list[MovieSchema] = []
 
-    def _transform_movies_info_to_schema(self, movies: list[MoviesWithFull]) -> list[MovieSchema]:
-        """Transform movies info to schema."""
-        movies = sorted(movies, key=lambda x: x.fw_id)
-        result: list[MovieSchema] = []
-        actors: dict[str, list[PersonFromDb]] = {}
-        writers: dict[str, list[PersonFromDb]] = {}
-        directors: dict[str, str] = {}
-
-        for movie in movies:
-            person = PersonFromDb(id=movie.p_id, name=movie.full_name, modified=movie.modified)
-            if movie.role == 'a':
-                actors.setdefault(movie.fw_id, set()).add(person)
-            elif movie.role == 'w':
-                writers.setdefault(movie.fw_id, set()).add(person)
-            if movie.role == 'd':
-                directors[movie.fw_id] = movie.full_name
-
-            result.append(
-                MovieSchema(
-                    id=movie.fw_id,
-                    imdb_rating=movie.rating or 0,
-                    genre=movie.genre,
-                    title=movie.title,
-                    description=movie.description if movie.description else '',
-                    director='',
-                    actors_names='',
-                    writers_names='',
-                    actors=[],
-                    writers=[],
-                )
-            )
-        for movie in result:
-            movie.actors = [PersonSchema(id=actor.id, name=actor.name) for actor in actors.get(movie.id, [])]
-            movie.writers = [
-                PersonSchema(id=writer.id, name=writer.name) for writer in writers.get(movie.id, [])
-            ]
-            movie.actors_names = [actor.name for actor in movie.actors]
-            movie.writers_names = [writer.name for writer in movie.writers]
-            movie.director = directors.get(movie.id, '')
-        return result
+            for row in cursor.fetchall():
+                res = dict(zip(columns, row))
+                res['director'] = res['directors'][0]['name'] if res['directors'] else ''
+                res['actors_names'] = [actor['name'] for actor in res['actors']]
+                res['writers_names'] = [writer['name'] for writer in res['writers']]
+                res['description'] = res['description'] if res['description'] else ''
+                res['imdb_rating'] = float(res['imdb_rating']) if res['imdb_rating'] else 0
+                for genre in res['genres']:
+                    movies.append(
+                        MovieSchema(
+                            id=res['id'],
+                            imdb_rating=res['imdb_rating'],
+                            genre=genre,
+                            title=res['title'],
+                            description=res['description'],
+                            director=res['director'],
+                            actors_names=res['actors_names'],
+                            writers_names=res['writers_names'],
+                            actors=[
+                                PersonSchema(id=actor['id'], name=actor['name']) for actor in res['actors']
+                            ],
+                            writers=[
+                                PersonSchema(id=writer['id'], name=writer['name'])
+                                for writer in res['writers']
+                            ],
+                        )
+                    )
+            return movies

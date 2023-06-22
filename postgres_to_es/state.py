@@ -25,8 +25,9 @@ class StorageFactory:
         if storage_type == StorageType.JSON.value:
             return JsonFileStorage('state.json')
         elif storage_type == StorageType.REDIS.value:
-            return RedisStorage(redis.Redis(host=getenv('REDIS_HOST', 'localhost'),
-                                            port=getenv('REDIS_PORT', 6379)))
+            return RedisStorage(
+                redis.Redis(host=getenv('REDIS_HOST', 'localhost'), port=getenv('REDIS_PORT', 6379))
+            )
         else:
             storage_types = ', '.join([storage_type.value for storage_type in StorageType])
             raise ValueError(
@@ -119,12 +120,12 @@ class MoviesStateManager(State):
     @property
     def last_date_of_modified_movie(self) -> datetime.datetime | None:
         """Get date of last modified movie."""
-        return self._get_date_or_none('last_date_of_modified_movie')
+        return self._get_date_or_none('last_date_of_modified_film_work')
 
     @last_date_of_modified_movie.setter
     def last_date_of_modified_movie(self, value: datetime.datetime) -> None:
         """Set date of last modified movie."""
-        self.set_state('last_date_of_modified_movie', value.strftime(self._date_format))
+        self.set_state('last_date_of_modified_film_work', value.strftime(self._date_format))
 
     @property
     def last_date_of_modified_person(self) -> datetime.datetime | None:

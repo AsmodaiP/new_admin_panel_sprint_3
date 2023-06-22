@@ -13,7 +13,7 @@ from log import logger
 from psycopg2.extras import DictCursor
 from state import MoviesStateManager
 
-load_dotenv('../.env')
+load_dotenv()
 
 DSL = {
     'dbname': os.environ.get('DB_NAME', 'movies_database'),
@@ -27,9 +27,6 @@ DSL = {
 def start_etl():
     """Start extract-transform-load process."""
     logger.info('Start ETL process')
-    if not getenv('ELASTIC_HOST'):
-        logger.error('Elastic host is not defined')
-        raise ValueError('Elastic host is not defined')
     elastic_loader = ElasticLoader(
         hosts=getenv('ELASTIC_HOST'),
         basic_auth=(getenv('ELASTIC_USERNAME', 'elastic'), getenv('ELASTIC_PASSWORD', 'changeme'),),
@@ -57,7 +54,7 @@ def start_etl():
                 movies, last_modified = extractor.get_data_to_elastic(modified)
                 elastic_loader.load_movies(movies)
                 logger.info('{} movies been processed.'.format(len(movies)))
-                state_manager.last_date_of_modified_movie = last_modified.movie
+                state_manager.last_date_of_modified_movie = last_modified.film_work
                 state_manager.last_date_of_modified_genre = last_modified.genre
                 state_manager.last_date_of_modified_person = last_modified.person
             except Exception:

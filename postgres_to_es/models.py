@@ -21,8 +21,8 @@ class MovieSchema(pydantic.BaseModel):
     title: str
     description: str
     director: str
-    actors_names: str
-    writers_names: str
+    actors_names: list[str]
+    writers_names: list[str]
     actors: list[PersonSchema]
     writers: list[PersonSchema]
 
